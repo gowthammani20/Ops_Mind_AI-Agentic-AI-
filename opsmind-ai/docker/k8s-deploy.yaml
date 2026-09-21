@@ -1,0 +1,175 @@
+# ────────────────────────────────────────────────
+# OpsMind AI — Kubernetes Deployment
+# Free cluster: Use Minikube locally OR
+#   render.com / Railway.app for free cloud k8s-like
+# ────────────────────────────────────────────────
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: opsmind
+  labels:
+    app: opsmind-ai
+
+---
+# ── ConfigMap ────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opsmind-config
+  namespace: opsmind
+data:
+  OLLAMA_BASE_URL: "http://ollama-service:11434"
+  OLLAMA_MODEL: "llama3.2"
+  APP_ENV: "production"
+  CHROMA_PERSIST_DIR: "/app/data/chroma_db"
+
+---
+# ── Secret ───────────────────────────────
+apiVersion: v1
+kind: Secret
+metadata:
+  name: opsmind-secret
+  namespace: opsmind
+type: Opaque
+stringData:
+  SECRET_KEY: "opsmind-k8s-secret-key-change-in-prod-!!"
+
+---
+# ── FastAPI Deployment ───────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opsmind-api
+  namespace: opsmind
+  labels:
+    app: opsmind-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: opsmind-api
+  template:
+    metadata:
+      labels:
+        app: opsmind-api
+    spec:
+      containers:
+        - name: api
+          image: opsmind-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: opsmind-config
+            - secretRef:
+                name: opsmind-secret
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opsmind-api-service
+  namespace: opsmind
+spec:
+  selector:
+    app: opsmind-api
+  ports:
+    - port: 80
+      targetPort: 8000
+  type: ClusterIP
+
+---
+# ── Streamlit Deployment ─────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opsmind-ui
+  namespace: opsmind
+  labels:
+    app: opsmind-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opsmind-ui
+  template:
+    metadata:
+      labels:
+        app: opsmind-ui
+    spec:
+      containers:
+        - name: streamlit
+          image: opsmind-streamlit:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8501
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opsmind-ui-service
+  namespace: opsmind
+spec:
+  selector:
+    app: opsmind-ui
+  ports:
+    - port: 80
+      targetPort: 8501
+  type: LoadBalancer   # Use NodePort for Minikube: type: NodePort
+
+---
+# ── Horizontal Pod Autoscaler ─────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: opsmind-api-hpa
+  namespace: opsmind
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: opsmind-api
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80

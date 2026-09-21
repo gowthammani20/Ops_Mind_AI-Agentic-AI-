@@ -1,0 +1,75 @@
+version: "3.9"
+
+services:
+  # ── Ollama LLM Backend ──────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: opsmind-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_NUM_PARALLEL=2
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ── FastAPI Backend ─────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: opsmind-api
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=llama3.2
+      - SECRET_KEY=${SECRET_KEY:-opsmind-dev-secret-key-32-chars-min!!}
+      - APP_ENV=production
+      - CHROMA_PERSIST_DIR=/app/data/chroma_db
+    volumes:
+      - ./data:/app/data
+      - ./ml/artifacts:/app/ml/artifacts
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Streamlit UI ─────────────────────────
+  streamlit:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.streamlit
+    container_name: opsmind-ui
+    ports:
+      - "8501:8501"
+    environment:
+      - API_BASE_URL=http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── ChromaDB Vector Store ───────────────
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: opsmind-chromadb
+    ports:
+      - "8080:8000"
+    volumes:
+      - chroma_data:/chroma/.chroma
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  chroma_data:
